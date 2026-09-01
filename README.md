@@ -26,72 +26,52 @@ A self-hosted, mobile-friendly AI bridge that uses **Google Gemini AI** to extra
 
 ---
 
-## 🚀 Portainer Stack Deployment (Step-by-Step)
+## 🚀 Deployment Instructions
 
-### Option A: Clone & Build via Portainer Web Editor
+### 🛑 Fix for "Unrecognized input header: 72" Error
+The error you encountered (`Unrecognized input header: 72`) is a known bug when Portainer tries to build images directly from source using Podman's BuildKit implementation. To bypass this, we will build the image directly on your Rocky Linux server using the terminal, and then deploy it in Portainer without the build step.
 
-Since this app is custom-built for you in Google AI Studio, you will first need to export it to your own GitHub repository (using the export menu in the AI Studio settings), and then deploy it in Portainer.
+### Step 1: Build the Image via Rocky Linux CLI
+SSH into your Rocky Linux server and run the following commands to pull your new code and build the image manually:
 
-1. **Export to GitHub**: In AI Studio, go to Settings $\rightarrow$ Export to GitHub. 
-2. Open your **Portainer** dashboard.
-3. Navigate to your **Environment / Local (Podman)** $\rightarrow$ **Stacks** $\rightarrow$ **+ Add stack**.
-4. Set the stack name: `firefly-receipt-splitter`.
-5. Choose **Repository** (or paste the compose file in Web Editor) and use the following `docker-compose.yml`:
+```bash
+# 1. Clone the repository you just exported to your GitHub
+git clone https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git
+cd YOUR_REPOSITORY
+
+# 2. Build the Docker image locally (this bypasses Portainer's buildkit bug)
+podman build -t firefly-receipt-splitter:latest .
+```
+
+### Step 2: Deploy the Stack in Portainer
+Now that the image is built and sitting on your server, go back to Portainer.
+
+1. Navigate to your **Environment / Local (Podman)** $\rightarrow$ **Stacks** $\rightarrow$ **+ Add stack**.
+2. Set the stack name: `firefly-receipt-splitter`.
+3. Choose **Web editor** (do NOT choose Repository this time).
+4. Paste the following updated `docker-compose.yml` (notice we removed the `build:` section and are just using the image we built):
+
    ```yaml
    version: "3.8"
 
    services:
      receipt-splitter:
-       build: 
-         context: .
-         dockerfile: Dockerfile
+       image: firefly-receipt-splitter:latest
        container_name: firefly-receipt-splitter
        restart: unless-stopped
        ports:
          - "3000:3000"
        environment:
          - GEMINI_API_KEY=${GEMINI_API_KEY}
+         - FIREFLY_URL=${FIREFLY_URL}
+         - FIREFLY_TOKEN=${FIREFLY_TOKEN}
    ```
-6. Scroll down to **Environment variables** section in Portainer and add:
+5. Scroll down to **Environment variables** section and add:
    - `GEMINI_API_KEY` = `your_actual_gemini_api_key`
-   - `FIREFLY_URL` = `http://192.168.1.100:8080` *(your Firefly base URL or container IP)*
+   - `FIREFLY_URL` = `http://192.168.1.100:8080` *(your Firefly URL)*
    - `FIREFLY_TOKEN` = `your_personal_access_token`
-7. Click **Deploy the stack**. Portainer will build the image directly from your source code.
-8. Access the app on `http://<rocky-linux-ip>:3000`.
-
----
-
-### Option B: Build & Run directly with Podman CLI on Rocky Linux
-
-If you prefer building directly on your Rocky Linux host via CLI:
-
-```bash
-# 1. Clone or copy project files to your server
-mkdir -p ~/firefly-splitter && cd ~/firefly-splitter
-
-# 2. Create your .env file
-cat <<EOF > .env
-GEMINI_API_KEY="your_gemini_api_key_here"
-FIREFLY_URL="http://192.168.1.50:8080"
-FIREFLY_TOKEN="your_firefly_pat_token_here"
-DEFAULT_SOURCE_ACCOUNT="Checking Account"
-PORT=5000
-EOF
-
-# 3. Build the container image using Podman
-podman build -t firefly-receipt-splitter:latest -f Containerfile .
-
-# 4. Run the container with Podman (rootless)
-podman run -d \
-  --name firefly-receipt-splitter \
-  --restart unless-stopped \
-  -p 8805:5000 \
-  --env-file .env \
-  firefly-receipt-splitter:latest
-
-# 5. Check logs
-podman logs -f firefly-receipt-splitter
-```
+6. Click **Deploy the stack**. 
+7. Access the app on `http://<rocky-linux-ip>:3000` from any browser or mobile phone!
 
 ---
 
