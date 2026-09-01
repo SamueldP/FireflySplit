@@ -1,0 +1,6 @@
+{
+  "name": "Firefly III Receipt Splitter",
+  "description": "AI-powered receipt OCR and intelligent line-item split transaction bridge for self-hosted Firefly III instances with Podman and Portainer deployment.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

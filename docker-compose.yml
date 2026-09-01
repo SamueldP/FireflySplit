@@ -1,0 +1,40 @@
+# ====================================================================
+# Firefly III AI Receipt Splitter - Portainer Stack / Podman Compose
+# Designed for Rocky Linux with Podman and Portainer
+# NO Docker Socket Mounts required (Fully Rootless / Podman compliant)
+# ====================================================================
+
+version: "3.8"
+
+services:
+  receipt-splitter:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: firefly-receipt-splitter:latest
+    container_name: firefly-receipt-splitter
+    restart: unless-stopped
+    ports:
+      - "8805:5000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - FIREFLY_URL=${FIREFLY_URL:-http://192.168.101.225:8585}
+      - FIREFLY_TOKEN=${FIREFLY_TOKEN:-728776fe917fa53f83467441756c29db}
+      - DEFAULT_SOURCE_ACCOUNT=${DEFAULT_SOURCE_ACCOUNT:-Discovery}
+      - PORT=5000
+      - HOST=0.0.0.0
+    # Optional: Attach to existing Firefly III internal bridge network if hosted on same Podman host
+    # networks:
+    #   - firefly_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "io.portainer.accesscontrol.public=true"
+
+# networks:
+#   firefly_network:
+#     external: true
