@@ -28,6 +28,7 @@ export interface FireflyConfig {
   url: string;
   token: string;
   source_account: string;
+  currency_code?: string;
   destination_account?: string;
   apply_rules: boolean;
   fire_webhooks: boolean;
@@ -38,7 +39,17 @@ export interface FireflyAccount {
   name: string;
   type: string;
   currency_code: string;
+  currency_symbol?: string;
   current_balance?: string;
+}
+
+export interface FireflyCurrency {
+  id: string;
+  code: string;
+  name: string;
+  symbol: string;
+  primary: boolean;
+  enabled: boolean;
 }
 
 export interface FireflyTransactionSplitPayload {

@@ -273,6 +273,44 @@ def firefly_accounts():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/firefly/currencies", methods=["POST"])
+def firefly_currencies():
+    """Fetch enabled currencies from Firefly III."""
+    data = request.get_json(silent=True) or {}
+    url = (data.get("firefly_url") or os.getenv("FIREFLY_URL") or FIREFLY_URL).rstrip("/")
+    token = data.get("firefly_token") or os.getenv("FIREFLY_TOKEN") or FIREFLY_TOKEN
+
+    if not url or not token:
+        return jsonify({"error": "Firefly URL and Personal Access Token are required."}), 400
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "Firefly-Receipt-Splitter/1.0"
+    }
+
+    try:
+        resp = requests.get(f"{url}/api/v1/currencies", headers=headers, timeout=10, verify=False)
+        if resp.status_code == 200:
+            raw_currs = resp.json().get("data", [])
+            currencies = []
+            for c in raw_currs:
+                attrs = c.get("attributes", {})
+                currencies.append({
+                    "id": c.get("id"),
+                    "code": attrs.get("code"),
+                    "name": attrs.get("name"),
+                    "symbol": attrs.get("symbol"),
+                    "primary": bool(attrs.get("primary")),
+                    "enabled": bool(attrs.get("enabled", True)),
+                })
+            return jsonify({"currencies": currencies})
+        else:
+            return jsonify({"error": f"Firefly returned HTTP {resp.status_code}: {resp.text[:200]}"}), resp.status_code
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Failed to fetch currencies: {str(e)}"}), 502
+
+
 @app.route("/api/firefly/submit", methods=["POST"])
 def firefly_submit():
     """
@@ -295,7 +333,8 @@ def firefly_submit():
     source_name = payload.get("source_account") or os.getenv("DEFAULT_SOURCE_ACCOUNT") or "Discovery"
     store_name = receipt_data.get("store_name") or "Retail Store"
     date_str = receipt_data.get("date") or datetime.today().strftime("%Y-%m-%d")
-    currency = receipt_data.get("currency") or "ZAR"
+    currency_code = payload.get("currency_code")
+    selected_currency = currency_code if (currency_code and currency_code != "auto") else (receipt_data.get("currency") or "ZAR")
     splits = receipt_data.get("splits", [])
 
     if not splits:
@@ -308,8 +347,6 @@ def firefly_submit():
         }]
 
     # Build Firefly III Split Transaction JSON
-    # Documentation: POST /api/v1/transactions
-    # Body format: { "error_if_duplicate_hash": false, "apply_rules": true, "transactions": [ split1, split2, ... ] }
     firefly_splits = []
     
     for split in splits:
@@ -318,11 +355,11 @@ def firefly_submit():
             continue
             
         desc = split.get("description") or f"Item at {store_name}"
-        category = split.get("category") or "Uncategorized"
+        category = split.get("category") or "General Expenses"
         notes = split.get("notes") or f"Extracted by Gemini AI OCR. Qty: {split.get('quantity', 1)}"
         destination = split.get("destination_name") or store_name
 
-        firefly_splits.append({
+        tx_obj = {
             "type": "withdrawal",
             "date": f"{date_str}T12:00:00+00:00" if "T" not in date_str else date_str,
             "amount": f"{amount:.2f}",
@@ -330,18 +367,22 @@ def firefly_submit():
             "source_name": source_name,
             "destination_name": destination,
             "category_name": category,
-            "currency_code": currency,
             "notes": notes,
             "tags": ["receipt-ai", "gemini-ocr", category.lower().replace(" ", "-")]
-        })
+        }
+
+        if selected_currency and selected_currency != "none":
+            tx_obj["currency_code"] = selected_currency
+
+        firefly_splits.append(tx_obj)
 
     if not firefly_splits:
         return jsonify({"error": "No valid split amounts to submit."}), 400
 
     transaction_body = {
         "error_if_duplicate_hash": False,
-        "apply_rules": True,
-        "fire_webhooks": True,
+        "apply_rules": bool(payload.get("apply_rules", True)),
+        "fire_webhooks": bool(payload.get("fire_webhooks", True)),
         "transactions": firefly_splits
     }
 
@@ -362,20 +403,28 @@ def firefly_submit():
             verify=False
         )
 
+        try:
+            resp_json = resp.json()
+        except Exception:
+            resp_json = {"raw": resp.text}
+
         if resp.status_code in [200, 201]:
-            resp_data = resp.json()
-            trans_id = resp_data.get("data", {}).get("id", "N/A")
+            trans_id = resp_json.get("data", {}).get("id", "N/A")
             return jsonify({
                 "success": True,
                 "message": f"Successfully created split transaction #{trans_id} in Firefly III with {len(firefly_splits)} splits!",
                 "transaction_id": trans_id,
-                "firefly_response": resp_data
+                "firefly_data": resp_json,
+                "payload_sent": transaction_body
             })
         else:
             logger.error(f"Firefly error response: {resp.status_code} - {resp.text}")
             return jsonify({
-                "error": f"Firefly III rejected the transaction (HTTP {resp.status_code})",
-                "details": resp.text
+                "error": f"Firefly III rejected transaction (HTTP {resp.status_code})",
+                "message": resp_json.get("message") or f"Firefly III rejected transaction (HTTP {resp.status_code})",
+                "errors": resp_json.get("errors"),
+                "firefly_response": resp_json,
+                "payload_sent": transaction_body
             }), resp.status_code
 
     except requests.exceptions.RequestException as e:

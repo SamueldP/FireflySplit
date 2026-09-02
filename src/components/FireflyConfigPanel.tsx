@@ -11,10 +11,16 @@ import {
   ShieldCheck,
   Zap,
   Info,
-  Check
+  Check,
+  Copy,
+  Coins,
+  ChevronDown,
+  ChevronUp,
+  Bug,
+  HelpCircle,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { FireflyConfig, FireflyAccount, ParsedReceipt } from '../types';
+import { FireflyConfig, FireflyAccount, FireflyCurrency, ParsedReceipt } from '../types';
 
 interface FireflyConfigPanelProps {
   config: FireflyConfig;
@@ -23,6 +29,15 @@ interface FireflyConfigPanelProps {
   onSuccessSubmit: (transactionId: string) => void;
   fireflyConnected: boolean;
   setFireflyConnected: (val: boolean) => void;
+}
+
+interface ErrorDetails {
+  title: string;
+  message: string;
+  status?: number;
+  fieldErrors?: Record<string, string[]>;
+  rawResponse?: any;
+  payloadSent?: any;
 }
 
 export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
@@ -41,11 +56,24 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
     version?: string;
   } | null>(null);
   const [accounts, setAccounts] = useState<FireflyAccount[]>([]);
+  const [currencies, setCurrencies] = useState<FireflyCurrency[]>([]);
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
+  const [isLoadingCurrencies, setIsLoadingCurrencies] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<ErrorDetails | null>(null);
   const [lastSubmittedId, setLastSubmittedId] = useState<string | null>(null);
   const [simulationMode, setSimulationMode] = useState(false);
+  const [showRawError, setShowRawError] = useState(true);
+  const [copiedErrorJson, setCopiedErrorJson] = useState(false);
+  const [copiedPayloadJson, setCopiedPayloadJson] = useState(false);
+
+  // Auto-fetch accounts & currencies if config exists
+  useEffect(() => {
+    if (config.url && config.token) {
+      fetchAccounts();
+      fetchCurrencies();
+    }
+  }, [config.url, config.token]);
 
   // Test Firefly connection
   const handleTestConnection = async () => {
@@ -72,8 +100,8 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
           message: 'Successfully reached Firefly III instance!',
         });
         setFireflyConnected(true);
-        // Automatically fetch accounts upon successful connection
         fetchAccounts();
+        fetchCurrencies();
       } else {
         setTestResult({
           success: false,
@@ -118,10 +146,39 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
     }
   };
 
+  // Fetch currencies from Firefly
+  const fetchCurrencies = async () => {
+    if (!config.url || !config.token) return;
+    setIsLoadingCurrencies(true);
+
+    try {
+      const res = await fetch('/api/firefly/currencies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          firefly_url: config.url,
+          firefly_token: config.token,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.currencies) {
+        setCurrencies(data.currencies);
+      }
+    } catch (err) {
+      console.warn('Could not fetch currencies:', err);
+    } finally {
+      setIsLoadingCurrencies(false);
+    }
+  };
+
   // Submit split transaction to Firefly III
   const handleSubmitTransaction = async () => {
     if (!receipt || receipt.splits.length === 0) {
-      setSubmitError('No receipt splits available to submit. Please scan a receipt first.');
+      setSubmitError({
+        title: 'No splits to submit',
+        message: 'No receipt splits available to submit. Please scan a receipt first.',
+      });
       return;
     }
 
@@ -142,7 +199,10 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
     }
 
     if (!config.url || !config.token) {
-      setSubmitError('Firefly URL and Personal Access Token are required. Please configure below or enable Simulation Mode.');
+      setSubmitError({
+        title: 'Missing Configuration',
+        message: 'Firefly URL and Personal Access Token are required. Please configure below or enable Simulation Mode.',
+      });
       setIsSubmitting(false);
       return;
     }
@@ -155,6 +215,7 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
           firefly_url: config.url,
           firefly_token: config.token,
           source_account: config.source_account,
+          currency_code: config.currency_code,
           receipt_data: receipt,
           apply_rules: config.apply_rules,
           fire_webhooks: config.fire_webhooks,
@@ -168,10 +229,23 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
         onSuccessSubmit(data.transaction_id || 'OK');
         triggerConfetti();
       } else {
-        setSubmitError(data.error || data.details || 'Failed to create transaction in Firefly III.');
+        const fieldErrors = data.errors || data.firefly_response?.errors || undefined;
+        const msg = data.message || data.error || data.details || 'Failed to create transaction in Firefly III.';
+        
+        setSubmitError({
+          title: `Firefly III Rejected Transaction (HTTP ${res.status})`,
+          message: typeof msg === 'string' ? msg : JSON.stringify(msg),
+          status: res.status,
+          fieldErrors: fieldErrors,
+          rawResponse: data.firefly_response || data,
+          payloadSent: data.payload_sent,
+        });
       }
     } catch (err: any) {
-      setSubmitError(err.message || 'Error communicating with Firefly III server.');
+      setSubmitError({
+        title: 'Communication Error',
+        message: err.message || 'Error communicating with Firefly III server.',
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -187,6 +261,20 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
     } catch {
       // ignore
     }
+  };
+
+  const handleCopyErrorJson = () => {
+    if (!submitError?.rawResponse) return;
+    navigator.clipboard.writeText(JSON.stringify(submitError.rawResponse, null, 2));
+    setCopiedErrorJson(true);
+    setTimeout(() => setCopiedErrorJson(false), 2000);
+  };
+
+  const handleCopyPayloadJson = () => {
+    if (!submitError?.payloadSent) return;
+    navigator.clipboard.writeText(JSON.stringify(submitError.payloadSent, null, 2));
+    setCopiedPayloadJson(true);
+    setTimeout(() => setCopiedPayloadJson(false), 2000);
   };
 
   return (
@@ -310,16 +398,56 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
               />
             )}
             <p className="text-[11px] text-slate-500 mt-1">
-              Account that paid for the receipt (e.g. Checking, Visa, Cash)
+              Asset account that paid for the receipt (e.g. Discovery, Checking, Visa)
+            </p>
+          </div>
+
+          {/* Currency Preference */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <Coins className="w-3.5 h-3.5 text-slate-400" />
+                Firefly Currency Code
+              </label>
+              {currencies.length > 0 && (
+                <span className="text-[10px] text-emerald-600 font-medium">
+                  {currencies.filter(c => c.enabled).length} active currencies
+                </span>
+              )}
+            </div>
+
+            <select
+              value={config.currency_code || 'auto'}
+              onChange={(e) =>
+                setConfig((prev) => ({ ...prev, currency_code: e.target.value }))
+              }
+              className="w-full bg-white border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 shadow-sm transition"
+            >
+              <option value="auto">
+                Auto-detect from receipt (Currently: {receipt?.currency || 'ZAR'})
+              </option>
+              {currencies.map((curr) => (
+                <option key={curr.id} value={curr.code}>
+                  {curr.code} - {curr.name} ({curr.symbol}) {curr.primary ? '★ Primary' : ''}
+                </option>
+              ))}
+              <option value="ZAR">ZAR - South African Rand (R)</option>
+              <option value="USD">USD - US Dollar ($)</option>
+              <option value="EUR">EUR - Euro (€)</option>
+              <option value="GBP">GBP - British Pound (£)</option>
+              <option value="none">Omit currency_code (Use Firefly Account Default)</option>
+            </select>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Select an enabled currency code in your Firefly III or omit to use account default
             </p>
           </div>
 
           {/* Quick Options */}
-          <div className="flex flex-col justify-between">
+          <div className="md:col-span-2">
             <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
               Transaction Rules &amp; Hooks
             </label>
-            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                 <input
                   type="checkbox"
@@ -348,7 +476,7 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
 
         {/* Test Connection Button & Result */}
         <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-t border-slate-200">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               id="btn-test-firefly"
               onClick={handleTestConnection}
@@ -364,13 +492,22 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
             </button>
 
             {config.url && config.token && (
-              <button
-                onClick={fetchAccounts}
-                disabled={isLoadingAccounts}
-                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 transition"
-              >
-                {isLoadingAccounts ? 'Fetching...' : 'Fetch Accounts'}
-              </button>
+              <>
+                <button
+                  onClick={fetchAccounts}
+                  disabled={isLoadingAccounts}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 transition"
+                >
+                  {isLoadingAccounts ? 'Fetching...' : 'Refresh Accounts'}
+                </button>
+                <button
+                  onClick={fetchCurrencies}
+                  disabled={isLoadingCurrencies}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 transition"
+                >
+                  {isLoadingCurrencies ? 'Fetching...' : 'Refresh Currencies'}
+                </button>
+              </>
             )}
           </div>
 
@@ -404,7 +541,7 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
 
           {receipt && (
             <span className="text-xs font-mono font-bold text-blue-700 bg-blue-100 border border-blue-200 px-2.5 py-1 rounded-full">
-              {receipt.splits.length} splits &bull; R{receipt.total_amount.toFixed(2)}
+              {receipt.splits.length} splits &bull; {receipt.currency || 'ZAR'} {receipt.total_amount.toFixed(2)}
             </span>
           )}
         </div>
@@ -419,7 +556,7 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
               <div className="text-right">
                 <p className="text-xs text-slate-500">Total Withdrawal</p>
                 <p className="text-base font-mono font-bold text-slate-900">
-                  R{receipt.total_amount.toFixed(2)} {receipt.currency}
+                  {receipt.currency} {receipt.total_amount.toFixed(2)}
                 </p>
               </div>
             </div>
@@ -438,7 +575,7 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
                     </span>
                   </div>
                   <span className="font-mono font-bold text-slate-700 shrink-0">
-                    R{Number(s.amount).toFixed(2)}
+                    {receipt.currency} {Number(s.amount).toFixed(2)}
                   </span>
                 </div>
               ))}
@@ -453,13 +590,118 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
           </div>
         )}
 
-        {/* Submission Error Banner */}
+        {/* Detailed Submission Error Banner & JSON Inspector */}
         {submitError && (
-          <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg text-red-700 text-xs flex items-start gap-2.5">
-            <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold">Submission failed</p>
-              <p className="text-red-600 mt-0.5">{submitError}</p>
+          <div className="p-4 bg-red-50 border border-red-200 rounded-xl space-y-3.5 text-slate-800 shadow-sm">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                <div>
+                  <h4 className="font-bold text-red-900 text-sm">{submitError.title}</h4>
+                  <p className="text-xs text-red-700 mt-0.5">{submitError.message}</p>
+                </div>
+              </div>
+              {submitError.status && (
+                <span className="px-2 py-0.5 rounded bg-red-200 text-red-800 font-mono text-xs font-bold">
+                  HTTP {submitError.status}
+                </span>
+              )}
+            </div>
+
+            {/* Field-by-Field Error List */}
+            {submitError.fieldErrors && Object.keys(submitError.fieldErrors).length > 0 && (
+              <div className="bg-white/80 border border-red-200 rounded-lg p-3 space-y-2 text-xs">
+                <div className="flex items-center gap-1.5 text-red-800 font-semibold">
+                  <Bug className="w-4 h-4 text-red-600" />
+                  <span>Firefly Validation Details ({Object.keys(submitError.fieldErrors).length} issues):</span>
+                </div>
+                <div className="space-y-1.5">
+                  {Object.entries(submitError.fieldErrors).map(([field, messages]) => (
+                    <div key={field} className="flex flex-col sm:flex-row sm:items-baseline gap-1.5 p-2 rounded bg-red-50/60 border border-red-100">
+                      <code className="font-mono text-[11px] font-bold text-red-800 bg-red-100 px-1.5 py-0.5 rounded shrink-0">
+                        {field}
+                      </code>
+                      <span className="text-red-700 font-medium text-xs">
+                        {Array.isArray(messages) ? messages.join(' ') : String(messages)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Actionable Suggestions based on common Firefly errors */}
+            {submitError.fieldErrors && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-semibold">
+                  <HelpCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>How to fix this:</span>
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-amber-800 text-[11px] pl-1">
+                  {JSON.stringify(submitError.fieldErrors).includes('currency_code') && (
+                    <li>
+                      <strong>Invalid Currency:</strong> Your Firefly III instance does not have <code>{receipt?.currency || 'ZAR'}</code> enabled. Select one of your enabled currencies from the <strong>Firefly Currency Code</strong> dropdown above, or choose <em>"Omit currency_code"</em>.
+                    </li>
+                  )}
+                  {JSON.stringify(submitError.fieldErrors).includes('source_name') && (
+                    <li>
+                      <strong>Invalid Source Account:</strong> The account name <code>{config.source_account}</code> was not found as an active Asset account. Click <em>"Refresh Accounts"</em> above and pick your exact asset account from the dropdown.
+                    </li>
+                  )}
+                  {JSON.stringify(submitError.fieldErrors).includes('category_name') && (
+                    <li>
+                      <strong>Invalid Category:</strong> A category name format was rejected. Firefly III automatically creates categories unless restricted by role.
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            {/* Toggleable Raw JSON Inspector */}
+            <div className="border-t border-red-200 pt-2.5">
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setShowRawError(!showRawError)}
+                  className="text-xs font-semibold text-red-800 hover:text-red-900 flex items-center gap-1"
+                >
+                  {showRawError ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  <span>{showRawError ? 'Hide Raw JSON Response' : 'Show Raw JSON Response'}</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  {submitError.payloadSent && (
+                    <button
+                      type="button"
+                      onClick={handleCopyPayloadJson}
+                      className="text-[11px] font-medium bg-white hover:bg-slate-100 text-slate-700 px-2 py-1 rounded border border-slate-200 flex items-center gap-1 transition"
+                    >
+                      {copiedPayloadJson ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedPayloadJson ? 'Copied Payload!' : 'Copy Payload Sent'}</span>
+                    </button>
+                  )}
+                  {submitError.rawResponse && (
+                    <button
+                      type="button"
+                      onClick={handleCopyErrorJson}
+                      className="text-[11px] font-medium bg-white hover:bg-slate-100 text-slate-700 px-2 py-1 rounded border border-slate-200 flex items-center gap-1 transition"
+                    >
+                      {copiedErrorJson ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedErrorJson ? 'Copied JSON!' : 'Copy Firefly Response'}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {showRawError && submitError.rawResponse && (
+                <div className="mt-2 space-y-2">
+                  <div className="relative">
+                    <pre className="p-3 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded-lg overflow-x-auto max-h-56 select-all">
+                      {JSON.stringify(submitError.rawResponse, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -519,3 +761,4 @@ export const FireflyConfigPanel: React.FC<FireflyConfigPanelProps> = ({
     </div>
   );
 };
+

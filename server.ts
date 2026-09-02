@@ -319,10 +319,56 @@ app.post("/api/firefly/categories", async (req, res) => {
   }
 });
 
+// Fetch Firefly Currencies
+app.post("/api/firefly/currencies", async (req, res) => {
+  try {
+    const { firefly_url, firefly_token } = req.body;
+    const targetUrl = (firefly_url || process.env.FIREFLY_URL || "").trim().replace(/\/$/, "");
+    const token = (firefly_token || process.env.FIREFLY_TOKEN || "").trim();
+
+    if (!targetUrl || !token) {
+      return res.status(400).json({ error: "Missing Firefly URL or Token." });
+    }
+
+    const response = await fetch(`${targetUrl}/api/v1/currencies`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: "Failed to fetch currencies from Firefly III" });
+    }
+
+    const data = await response.json();
+    const currencies = (data.data || []).map((c: any) => ({
+      id: c.id,
+      code: c.attributes?.code,
+      name: c.attributes?.name,
+      symbol: c.attributes?.symbol,
+      primary: Boolean(c.attributes?.primary),
+      enabled: Boolean(c.attributes?.enabled),
+    }));
+
+    res.json({ currencies });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Submit Split Transaction to Firefly III
 app.post("/api/firefly/submit", async (req, res) => {
   try {
-    const { firefly_url, firefly_token, source_account, receipt_data, apply_rules = true, fire_webhooks = true } = req.body;
+    const {
+      firefly_url,
+      firefly_token,
+      source_account,
+      currency_code,
+      receipt_data,
+      apply_rules = true,
+      fire_webhooks = true,
+    } = req.body;
 
     const targetUrl = (firefly_url || process.env.FIREFLY_URL || "").trim().replace(/\/$/, "");
     const token = (firefly_token || process.env.FIREFLY_TOKEN || "").trim();
@@ -338,7 +384,11 @@ app.post("/api/firefly/submit", async (req, res) => {
     const sourceName = source_account || process.env.DEFAULT_SOURCE_ACCOUNT || "Discovery";
     const storeName = receipt_data.store_name || "Merchant";
     const dateStr = receipt_data.date || new Date().toISOString().split("T")[0];
-    const currency = receipt_data.currency || "ZAR";
+    
+    // Determine currency: prioritize explicitly selected currency_code, otherwise receipt currency
+    const selectedCurrency = currency_code && currency_code !== "auto"
+      ? currency_code
+      : (receipt_data.currency || "ZAR");
 
     // Build the split transactions list
     const transactions = receipt_data.splits
@@ -346,7 +396,7 @@ app.post("/api/firefly/submit", async (req, res) => {
       .map((split: any) => {
         const amt = Math.abs(Number(split.amount)).toFixed(2);
         const isRefund = Number(split.amount) < 0;
-        return {
+        const txObj: any = {
           type: isRefund ? "deposit" : "withdrawal",
           date: dateStr.includes("T") ? dateStr : `${dateStr}T12:00:00+00:00`,
           amount: amt,
@@ -354,10 +404,16 @@ app.post("/api/firefly/submit", async (req, res) => {
           source_name: sourceName,
           destination_name: split.destination_name || storeName,
           category_name: split.category || "General Expenses",
-          currency_code: currency,
           notes: split.notes || `Extracted by Gemini AI OCR (Qty: ${split.quantity || 1})`,
           tags: ["receipt-ai", "gemini-ocr", (split.category || "").toLowerCase().replace(/[^a-z0-9]/g, "-")],
         };
+
+        // If currency is specified and not omitted
+        if (selectedCurrency && selectedCurrency !== "none") {
+          txObj.currency_code = selectedCurrency;
+        }
+
+        return txObj;
       });
 
     const fireflyPayload = {
@@ -398,9 +454,12 @@ app.post("/api/firefly/submit", async (req, res) => {
         payload_sent: fireflyPayload,
       });
     } else {
+      console.warn(`[Firefly Submit Rejected ${response.status}]:`, JSON.stringify(respJson, null, 2));
       return res.status(response.status).json({
         error: `Firefly III rejected transaction (HTTP ${response.status})`,
-        details: respJson?.message || respJson?.errors || respText.slice(0, 300),
+        message: respJson?.message || `Firefly III rejected transaction (HTTP ${response.status})`,
+        errors: respJson?.errors || null,
+        firefly_response: respJson,
         payload_sent: fireflyPayload,
       });
     }
@@ -408,6 +467,7 @@ app.post("/api/firefly/submit", async (req, res) => {
     console.error("Firefly submit error:", error);
     res.status(502).json({
       error: `Failed to communicate with Firefly III: ${error.message || String(error)}`,
+      details: error.message,
     });
   }
 });

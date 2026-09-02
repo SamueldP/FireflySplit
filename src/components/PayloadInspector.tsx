@@ -25,10 +25,13 @@ export const PayloadInspector: React.FC<PayloadInspectorProps> = ({ receipt, con
     const sourceName = config.source_account || 'Checking Account';
     const storeName = receipt.store_name || 'Retail Store';
     const dateStr = receipt.date || new Date().toISOString().split('T')[0];
+    const selectedCurrency = config.currency_code && config.currency_code !== 'auto'
+      ? config.currency_code
+      : (receipt.currency || 'ZAR');
 
     const transactions = receipt.splits.map((split) => {
       const isRefund = split.amount < 0;
-      return {
+      const tx: any = {
         type: (isRefund ? 'deposit' : 'withdrawal') as 'withdrawal' | 'deposit',
         date: dateStr.includes('T') ? dateStr : `${dateStr}T12:00:00+00:00`,
         amount: Math.abs(split.amount).toFixed(2),
@@ -36,7 +39,6 @@ export const PayloadInspector: React.FC<PayloadInspectorProps> = ({ receipt, con
         source_name: sourceName,
         destination_name: split.destination_name || storeName,
         category_name: split.category || 'General Expenses',
-        currency_code: receipt.currency || 'USD',
         notes: split.notes || `Extracted by Gemini AI OCR (Qty: ${split.quantity || 1})`,
         tags: [
           'receipt-ai',
@@ -44,6 +46,12 @@ export const PayloadInspector: React.FC<PayloadInspectorProps> = ({ receipt, con
           (split.category || '').toLowerCase().replace(/[^a-z0-9]/g, '-'),
         ],
       };
+
+      if (selectedCurrency && selectedCurrency !== 'none') {
+        tx.currency_code = selectedCurrency;
+      }
+
+      return tx;
     });
 
     return {
